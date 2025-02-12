@@ -1,74 +1,50 @@
-extern crate image;
+use windows::Win32::Foundation::{BOOL, LPARAM, RECT};
+use windows::Win32::Graphics::Gdi::{EnumDisplayMonitors, HDC, HMONITOR};
+use windows::core::*;
+use std::ptr;
 
-use windows::Win32::Graphics::Gdi::{
-    CreateCompatibleDC, CreateCompatibleBitmap, BitBlt, SRCCOPY, SelectObject, GetDIBits, BITMAPINFO, BI_RGB, DeleteObject
-};
-use windows::Win32::UI::WindowsAndMessaging::{GetDC, ReleaseDC, GetDesktopWindow, GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
-use image::{DynamicImage, GrayImage, RgbImage, RgbaImage};
+#[link(name = "Dxva2")]
+extern "system" {
+    fn GetMonitorBrightness(
+        hmonitor: HMONITOR,
+        pdwMinimumBrightness: *mut u32,
+        pdwCurrentBrightness: *mut u32,
+        pdwMaximumBrightness: *mut u32,
+    ) -> BOOL;
 
-
-fn main() {
-    let img = capture_screen();
-    img.save("screenshot.png").unwrap();
-
-    let rgb: RgbImage = RgbImage::new(10, 10);
-    let luma: GrayImage = DynamicImage::ImageRgb8(rgb).into_luma8();
+    fn SetMonitorBrightness(hmonitor: HMONITOR, dwNewBrightness: u32) -> BOOL;
 }
 
-fn capture_screen() -> DynamicImage {
-    unsafe {
-        let hdc_screen = GetDC(GetDesktopWindow());
+// Corrected callback function signature
+unsafe extern "system" fn monitor_enum_proc(
+    hmonitor: HMONITOR,
+    _: HDC,
+    _: *mut RECT,
+    brightness: LPARAM,
+) -> BOOL {
+    let mut min_brightness = 0;
+    let mut max_brightness = 0;
+    let mut current_brightness = 0;
 
-        let width = GetSystemMetrics(SM_CXSCREEN) as i32;
-        let height = GetSystemMetrics(SM_CYSCREEN) as i32;
-
-        let hdc_mem = CreateCompatibleDC(hdc_screen);
-        let hbitmap = CreateCompatibleBitmap(hdc_screen, width, height);
-
-        SelectObject(hdc_mem, hbitmap);
-
-        BitBlt(hdc_mem, 0, 0, width, height, hdc_screen, 0, 0, SRCCOPY);
-
-        let mut buffer = vec![0u8; (width * height * 4) as usize]; // 4 bytes per pixel (RGBA)
-
-        let mut bitmap_info = BITMAPINFO {
-            bmiHeader: windows::Win32::Graphics::Gdi::BITMAPINFOHEADER {
-                biSize: std::mem::size_of::<windows::Win32::Graphics::Gdi::BITMAPINFOHEADER>() as u32,
-                biWidth: width,
-                biHeight: -height, // Negative to indicate top-down bitmap
-                biPlanes: 1,
-                biBitCount: 32, // 32-bit color (RGBA)
-                biCompression: BI_RGB,
-                biSizeImage: 0,
-                biXPelsPerMeter: 0,
-                biYPelsPerMeter: 0,
-                biClrUsed: 0,
-                biClrImportant: 0,
-            },
-            bmiColors: [windows::Win32::Graphics::Gdi::RGBQUAD { rgbBlue: 0, rgbGreen: 0, rgbRed: 0, rgbReserved: 0 }; 1],
-        };
-
-        let result = GetDIBits(
-            hdc_mem,
-            hbitmap,
-            0,
-            height as u32,
-            *(buffer.as_mut_ptr() as *mut _),
-            &mut bitmap_info,
-            windows::Win32::Graphics::Gdi::DIB_RGB_COLORS,
-        );
-
-        if result == 0 {
-            panic!("Failed to capture screen!");
+    if GetMonitorBrightness(hmonitor, &mut min_brightness, &mut current_brightness, &mut max_brightness).as_bool() {
+        let new_brightness = brightness.0 as u32;
+        if new_brightness >= min_brightness && new_brightness <= max_brightness {
+            SetMonitorBrightness(hmonitor, new_brightness);
         }
+    }
+    true.into()
+}
 
-        let img = RgbaImage::from_raw(width as u32, height as u32, buffer).unwrap();
+fn set_brightness(level: u32) -> Result<()> {
+    unsafe {
+        EnumDisplayMonitors(None, None, Some(monitor_enum_proc), LPARAM(level as isize));
+    }
+    Ok(())
+}
 
-        // Clean up
-        DeleteObject(hbitmap);
-        ReleaseDC(GetDesktopWindow(), hdc_screen);
-        DeleteObject(hdc_mem);
-
-        DynamicImage::ImageRgba8(img)
+fn main() {
+    match set_brightness(100) {
+        Ok(_) => println!("Brightness set to 100%"),
+        Err(e) => eprintln!("Error: {:?}", e),
     }
 }
